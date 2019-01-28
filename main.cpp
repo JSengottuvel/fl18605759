@@ -367,7 +367,7 @@ void cNonBlockingTCPClient::Read( int byte_count )
     }
     async_read(
         * mySocketTCP,
-        boost::asio::buffer(myRcvBuffer, MAX_PACKET_SIZE_BYTES ),
+        boost::asio::buffer(myRcvBuffer, byte_count ),
         boost::bind(&cNonBlockingTCPClient::handle_read, this,
                     boost::asio::placeholders::error,
                     boost::asio::placeholders::bytes_transferred ));
