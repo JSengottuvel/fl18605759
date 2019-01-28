@@ -185,7 +185,10 @@ void cKeyboard::Start()
 
         case 'x':
         case 'X':
+            myTCP->Command( cmd );
             myWS->Stop();
+
+            // return, ending the thread
             return;
 
         case 'q':
@@ -235,6 +238,10 @@ void cNonBlockingTCPClient::CheckForCommand()
         case 'C':
             Connect( vcmd[1], vcmd[2] );
             break;
+        case 'x':
+        case 'X':
+            // stop command, return without scheduling another check
+            return;
         default:
             std::cout << "Unrecognized command\n";
             break;
@@ -355,6 +362,8 @@ int main()
     theWorkSimulator.StartWork();
 
     io_service.run();
+
+    std::cout << "Event manager finished\n";
 
     return 0;
 }
