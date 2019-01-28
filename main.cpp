@@ -14,10 +14,7 @@ using namespace std;
 // you can reduce this to 500 for production
 #define WORK_TIME_MSECS 2000
 
-unsigned char connect_message[] {0x02, 0xfd, 00, 0x05, 00, 00, 00, 07, 0x0f, 0x0d, 0x00, 0x00, 0x00, 0x00, 0x00};
-
-unsigned char write_message[] {0x02, 0xfd, 0x80, 0x01, 00, 00, 00, 07, 0x0f, 0x0d, 0xAA, 0xBB, 0x22, 0x11, 0x22};
-
+/** A non-blocking TCP client */
 class cNonBlockingTCPClient
 {
 public:
@@ -75,10 +72,12 @@ private:
     {
         no,                             /// there is no connection
         yes,                            /// connected
-        not_yet
-    }                       /// Connection is being made, not yet complete
+        not_yet                          /// Connection is being made, not yet complete
+    }
     myConnection;
     unsigned char myRcvBuffer [ MAX_PACKET_SIZE_BYTES ];
+    unsigned char myConnectMessage[15] {0x02, 0xfd, 00, 0x05, 00, 00, 00, 07, 0x0f, 0x0d, 0x00, 0x00, 0x00, 0x00, 0x00};
+    unsigned char myWriteMessage[15] {0x02, 0xfd, 0x80, 0x01, 00, 00, 00, 07, 0x0f, 0x0d, 0xAA, 0xBB, 0x22, 0x11, 0x22};
 
     void handle_read(
         const boost::system::error_code& error,
@@ -391,7 +390,7 @@ void cNonBlockingTCPClient::Connect(
 
             boost::asio::async_write(
                 *mySocketTCP,
-                boost::asio::buffer(connect_message, 15),
+                boost::asio::buffer(myConnectMessage, 15),
                 boost::bind(&cNonBlockingTCPClient::handle_connect_write, this,
                             boost::asio::placeholders::error,
                             boost::asio::placeholders::bytes_transferred ));
@@ -437,7 +436,7 @@ void cNonBlockingTCPClient::Write()
     }
     boost::asio::async_write(
         *mySocketTCP,
-        boost::asio::buffer(write_message, 15),
+        boost::asio::buffer(myWriteMessage, 15),
         boost::bind(&cNonBlockingTCPClient::handle_write, this,
                     boost::asio::placeholders::error,
                     boost::asio::placeholders::bytes_transferred ));
