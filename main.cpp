@@ -159,19 +159,11 @@ private:
 class cKeyboard
 {
 public:
-    cKeyboard(boost::asio::io_service& io_service )
-        : myIOService( io_service )
-    {
+    cKeyboard(
+        boost::asio::io_service& io_service,
+        cWorkSimulator& WS,
+        cNonBlockingTCPClient& TCP );
 
-    }
-    void Set( cWorkSimulator& WS )
-    {
-        myWS = &WS;
-    }
-    void Set( cNonBlockingTCPClient& TCP )
-    {
-        myTCP = &TCP;
-    }
     void Start();
 
 private:
@@ -179,6 +171,25 @@ private:
     cWorkSimulator* myWS;
     cNonBlockingTCPClient * myTCP;
 };
+
+cKeyboard::cKeyboard(
+    boost::asio::io_service& io_service,
+    cWorkSimulator& WS,
+    cNonBlockingTCPClient& TCP
+)
+    : myIOService( io_service )
+    , myWS( &WS )
+    , myTCP( &TCP )
+{
+    // start monitor in own thread
+    new std::thread(
+        &cKeyboard::Start,
+        std::ref(*this) );
+
+    // allow time for thread to start and user to read usage instructions
+    std::this_thread::sleep_for (std::chrono::seconds(3));
+}
+
 
 void cKeyboard::Start()
 {
@@ -249,14 +260,22 @@ void cNonBlockingTCPClient::CheckForCommand()
         case 'R':
             Read( atoi( vcmd[1].c_str()));
             break;
+
         case 'c':
         case 'C':
             Connect( vcmd[1], vcmd[2] );
             break;
+
+        case 'w':
+        case 'W':
+            Write();
+            break;
+
         case 'x':
         case 'X':
             // stop command, return without scheduling another check
             return;
+
         default:
             std::cout << "Unrecognized command\n";
             break;
@@ -417,13 +436,11 @@ int main()
     theClient.CheckForCommand();
 
     // start keyboard monitor
-    cKeyboard theKeyBoard( io_service );
-    theKeyBoard.Set( theWorkSimulator );
-    theKeyBoard.Set( theClient );
-    std::thread * threadKeyboard = new std::thread(
-        &cKeyboard::Start,
-        std::ref(theKeyBoard) );
-    std::this_thread::sleep_for (std::chrono::seconds(3));
+    cKeyboard theKeyBoard(
+        io_service,
+        theWorkSimulator,
+        theClient
+    );
 
     // start simulating work
     theWorkSimulator.StartWork();
