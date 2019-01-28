@@ -399,7 +399,10 @@ void cNonBlockingTCPClient::handle_read(
         myConnection = constatus::no;
         return;
     }
-    std::cout << bytes_received << "bytes read\n";
+    std::cout << bytes_received << " bytes read\n";
+    for( int k = 0; k < bytes_received; k++ )
+        std::cout << std::hex << (int)myRcvBuffer[k] << " ";
+    std::cout << std::dec << "\n";
 }
 
 void cNonBlockingTCPClient::handle_connect_write(
