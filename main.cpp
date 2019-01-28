@@ -258,7 +258,10 @@ void cNonBlockingTCPClient::CheckForCommand()
         {
         case 'r':
         case 'R':
-            Read( atoi( vcmd[1].c_str()));
+            if( vcmd.size() < 2 )
+                std::cout << "Read command missing byte count\n";
+            else
+                Read( atoi( vcmd[1].c_str()));
             break;
 
         case 'c':
@@ -352,6 +355,10 @@ void cNonBlockingTCPClient::Read( int byte_count )
     {
         std::cout << "Read Request but no connection\n";
         return;
+    }
+    if( byte_count < 1 )
+    {
+        std::cout << "Error in read command\n";
     }
     if( byte_count > MAX_PACKET_SIZE_BYTES )
     {
