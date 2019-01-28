@@ -170,6 +170,8 @@ void cKeyboard::Start()
 {
     std::cout << "\nKeyboard monitor running\n\n"
               "   To pause for user input type 'q<ENTER>\n"
+              "   To connect to server type 'C <ip> <port><ENTER>\n"
+              "   To read from server type 'R <byte count><ENTER>\n"
               "   To stop type 'x<ENTER>' ( DO NOT USE ctrlC )\n\n"
               "   Don't forget to hit <ENTER>!\n\n";
 
@@ -217,11 +219,29 @@ void cNonBlockingTCPClient::CheckForCommand()
     {
         std::cout << "cNonBlockingTCPClient::CheckForCommand " << cmd << "\n";
 
+        std::stringstream sst(cmd);
+        std::vector< std::string > vcmd;
+        std::string a;
+        while( getline( sst, a, ' ' ) )
+            vcmd.push_back(a);
+
+        switch( vcmd[0][0] )
+        {
+        case 'r':
+        case 'R':
+            Read( atoi( vcmd[1].c_str()));
+            break;
+        case 'c':
+        case 'C':
+            Connect( vcmd[1], vcmd[2] );
+            break;
+        default:
+            std::cout << "Unrecognized command\n";
+            break;
+        }
+
         // clear old command
         Command("");
-    }
-    else{
-        std::cout << "no command\n";
     }
 
     //schedule next check
