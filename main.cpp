@@ -18,6 +18,81 @@ unsigned char connect_message[] {0x02, 0xfd, 00, 0x05, 00, 00, 00, 07, 0x0f, 0x0
 
 unsigned char write_message[] {0x02, 0xfd, 0x80, 0x01, 00, 00, 00, 07, 0x0f, 0x0d, 0xAA, 0xBB, 0x22, 0x11, 0x22};
 
+class cNonBlockingTCPClient
+{
+public:
+
+    /** CTOR
+        param[in] io_service the event manager
+    */
+
+    cNonBlockingTCPClient(
+        boost::asio::io_service& io_service )
+        : myIOService( io_service )
+        , myTimer( new boost::asio::deadline_timer( io_service ))
+    {
+
+    }
+
+    /** Connect to server
+        @param[in] ip address of server
+        @param[in] port server is listening to for connections
+
+        This does not return until the connection attempt successds or fails.
+        The return occurs so quickly that it does not seem wiorthwhile
+        to make this non-blocking.
+
+        On successful connection a pre-defined message is sent to the server
+        this is non-blocking and when the message has been sent handle_connect_write() will be called
+    */
+    void Connect(
+        const std::string& ip,
+        const std::string& port);
+
+    /** read message from server
+        @param[in] byte_count to be read
+
+        This is non-blocking, returning immediatly.
+        When sufficient bytes arrive from the server
+        the method handle_read() will be called
+    */
+    void Read( int byte_count );
+
+    /** write pre-defined message to server
+
+        This is non-blocking, returning immediatly.
+        When write completes
+        the method handle_write() will be called
+    */
+    void Write();
+
+
+private:
+    boost::asio::io_service& myIOService;
+    boost::asio::ip::tcp::tcp::socket * mySocketTCP;
+    boost::asio::deadline_timer * myTimer;
+    enum class constatus
+    {
+        no,                             /// there is no connection
+        yes,                            /// connected
+        not_yet
+    }                       /// Connection is being made, not yet complete
+    myConnection;
+    unsigned char myRcvBuffer [ MAX_PACKET_SIZE_BYTES ];
+
+    void handle_read(
+        const boost::system::error_code& error,
+        std::size_t bytes_received );
+
+    void handle_connect_write(
+        const boost::system::error_code& error,
+        std::size_t bytes_sent );
+
+    void handle_write(
+        const boost::system::error_code& error,
+        std::size_t bytes_sent );
+};
+
 class cWorkSimulator
 {
 public:
@@ -86,19 +161,22 @@ private:
     bool myfStop;
 };
 
-class cNonBlockingTCPClient
+
+/** Command handler receives commands from the keyboard monitor ( running in keyboard monitor thread )
+    and dispatches them to the TCP client running in the main thread */
+
+class cCommander
 {
 public:
-    cNonBlockingTCPClient(
-        boost::asio::io_service& io_service )
+    cCommander(
+        boost::asio::io_service& io_service,
+        cNonBlockingTCPClient& TCP )
         : myIOService( io_service )
+        , myTCP( TCP )
         , myTimer( new boost::asio::deadline_timer( io_service ))
     {
-
+        CheckForCommand();
     }
-
-    /// Check for commands ( connect, read, write )
-    void CheckForCommand();
 
     /** Set command from user ( thread safe )
 
@@ -112,42 +190,18 @@ public:
     */
     string Command();
 
-    void Connect(
-        const std::string& ip,
-        const std::string& port);
-
-    void Read( int byte_count );
-
-    void Write();
-
 
 private:
     boost::asio::io_service& myIOService;
-    boost::asio::ip::tcp::tcp::socket * mySocketTCP;
     boost::asio::deadline_timer * myTimer;
+    cNonBlockingTCPClient & myTCP;
     std::string myCommand;
     std::mutex myMutex;
-    enum class constatus
-    {
-        no,                             /// there is no connection
-        yes,                            /// connected
-        not_yet
-    }                       /// Connection is being made, not yet complete
-    myConnection;
-    unsigned char myRcvBuffer [ MAX_PACKET_SIZE_BYTES ];
 
-    void handle_read(
-        const boost::system::error_code& error,
-        std::size_t bytes_received );
-
-    void handle_connect_write(
-        const boost::system::error_code& error,
-        std::size_t bytes_sent );
-
-    void handle_write(
-        const boost::system::error_code& error,
-        std::size_t bytes_sent );
+    /// Check for commands ( connect, read, write )
+    void CheckForCommand();
 };
+
 
 /** Keyboard monitor
 
@@ -162,24 +216,24 @@ public:
     cKeyboard(
         boost::asio::io_service& io_service,
         cWorkSimulator& WS,
-        cNonBlockingTCPClient& TCP );
+        cCommander& myCommander );
 
     void Start();
 
 private:
     boost::asio::io_service& myIOService;
     cWorkSimulator* myWS;
-    cNonBlockingTCPClient * myTCP;
+    cCommander * myCommander;
 };
 
 cKeyboard::cKeyboard(
     boost::asio::io_service& io_service,
     cWorkSimulator& WS,
-    cNonBlockingTCPClient& TCP
+    cCommander& Commander
 )
     : myIOService( io_service )
     , myWS( &WS )
-    , myTCP( &TCP )
+    , myCommander( &Commander )
 {
     // start monitor in own thread
     new std::thread(
@@ -211,7 +265,7 @@ void cKeyboard::Start()
 
         case 'x':
         case 'X':
-            myTCP->Command( cmd );
+            myCommander->Command( cmd );
             myWS->Stop();
 
             // return, ending the thread
@@ -231,7 +285,7 @@ void cKeyboard::Start()
         case 'W':
 
             // register command with TCP client
-            myTCP->Command( cmd );
+            myCommander->Command( cmd );
 
             // user input finished, resume work
             myWS->WaitOnUserUnSet();
@@ -241,7 +295,7 @@ void cKeyboard::Start()
         }
     }
 }
-void cNonBlockingTCPClient::CheckForCommand()
+void cCommander::CheckForCommand()
 {
     string cmd = Command();
     if( cmd.length() )
@@ -261,17 +315,17 @@ void cNonBlockingTCPClient::CheckForCommand()
             if( vcmd.size() < 2 )
                 std::cout << "Read command missing byte count\n";
             else
-                Read( atoi( vcmd[1].c_str()));
+                myTCP.Read( atoi( vcmd[1].c_str()));
             break;
 
         case 'c':
         case 'C':
-            Connect( vcmd[1], vcmd[2] );
+            myTCP.Connect( vcmd[1], vcmd[2] );
             break;
 
         case 'w':
         case 'W':
-            Write();
+            myTCP.Write();
             break;
 
         case 'x':
@@ -291,15 +345,15 @@ void cNonBlockingTCPClient::CheckForCommand()
     //schedule next check
     myTimer->expires_from_now(boost::posix_time::milliseconds(500));
 
-    myTimer->async_wait(boost::bind(&cNonBlockingTCPClient::CheckForCommand, this));
+    myTimer->async_wait(boost::bind(&cCommander::CheckForCommand, this));
 }
 
-void cNonBlockingTCPClient::Command( const std::string& command)
+void cCommander::Command( const std::string& command)
 {
     std::lock_guard<std::mutex> lck (myMutex);
     myCommand = command;
 }
-std::string cNonBlockingTCPClient::Command()
+std::string cCommander::Command()
 {
     std::lock_guard<std::mutex> lck (myMutex);
     return myCommand;
@@ -442,14 +496,16 @@ int main()
     // construct TCP client
     cNonBlockingTCPClient theClient( io_service );
 
-    // start TCP client command handler
-    theClient.CheckForCommand();
+    // construct commander to dispatch commands from user in keyboard thread to TCP client in main thread
+    cCommander theCommander(
+        io_service,
+        theClient );
 
     // start keyboard monitor
     cKeyboard theKeyBoard(
         io_service,
         theWorkSimulator,
-        theClient
+        theCommander
     );
 
     // start simulating work
