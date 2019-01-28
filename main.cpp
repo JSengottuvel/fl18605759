@@ -14,6 +14,10 @@ using namespace std;
 // you can reduce this to 500 for production
 #define WORK_TIME_MSECS 2000
 
+unsigned char connect_message[] {0x02, 0xfd, 00, 0x05, 00, 00, 00, 07, 0x0f, 0x0d, 0x00, 0x00, 0x00, 0x00, 0x00};
+
+unsigned char write_message[] {0x02, 0xfd, 0x80, 0x01, 00, 00, 00, 07, 0x0f, 0x0d, 0xAA, 0xBB, 0x22, 0x11, 0x22};
+
 class cWorkSimulator
 {
 public:
@@ -114,6 +118,8 @@ public:
 
     void Read( int byte_count );
 
+    void Write();
+
 
 private:
     boost::asio::io_service& myIOService;
@@ -133,6 +139,14 @@ private:
     void handle_read(
         const boost::system::error_code& error,
         std::size_t bytes_received );
+
+    void handle_connect_write(
+        const boost::system::error_code& error,
+        std::size_t bytes_sent );
+
+    void handle_write(
+        const boost::system::error_code& error,
+        std::size_t bytes_sent );
 };
 
 /** Keyboard monitor
@@ -172,6 +186,7 @@ void cKeyboard::Start()
               "   To pause for user input type 'q<ENTER>\n"
               "   To connect to server type 'C <ip> <port><ENTER>\n"
               "   To read from server type 'R <byte count><ENTER>\n"
+              "   To send a pre-defined message to the server type 'W'\n"
               "   To stop type 'x<ENTER>' ( DO NOT USE ctrlC )\n\n"
               "   Don't forget to hit <ENTER>!\n\n";
 
@@ -297,6 +312,13 @@ void cNonBlockingTCPClient::Connect(
         {
             myConnection = constatus::yes;
             std::cout << "Client Connected OK\n";
+
+            boost::asio::async_write(
+                *mySocketTCP,
+                boost::asio::buffer(connect_message, 15),
+                boost::bind(&cNonBlockingTCPClient::handle_connect_write, this,
+                            boost::asio::placeholders::error,
+                            boost::asio::placeholders::bytes_transferred ));
         }
     }
 
@@ -326,6 +348,21 @@ void cNonBlockingTCPClient::Read( int byte_count )
     std::cout << "waiting for server to reply\n";
 }
 
+void cNonBlockingTCPClient::Write()
+{
+    if( myConnection != constatus::yes )
+    {
+        std::cout << "Write Request but no connection\n";
+        return;
+    }
+    boost::asio::async_write(
+        *mySocketTCP,
+        boost::asio::buffer(write_message, 15),
+        boost::bind(&cNonBlockingTCPClient::handle_write, this,
+                    boost::asio::placeholders::error,
+                    boost::asio::placeholders::bytes_transferred ));
+}
+
 void cNonBlockingTCPClient::handle_read(
     const boost::system::error_code& error,
     std::size_t bytes_received )
@@ -339,16 +376,45 @@ void cNonBlockingTCPClient::handle_read(
     std::cout << bytes_received << "bytes read\n";
 }
 
+void cNonBlockingTCPClient::handle_connect_write(
+    const boost::system::error_code& error,
+    std::size_t bytes_sent )
+{
+    if( error || bytes_sent != 15 )
+    {
+        std::cout << "Error sending connection message to server\n";
+        myConnection = constatus::no;
+        return;
+    }
+    std::cout << "Connection message sent to server\n";
+}
+
+void cNonBlockingTCPClient::handle_write(
+    const boost::system::error_code& error,
+    std::size_t bytes_sent )
+{
+    if( error || bytes_sent != 15 )
+    {
+        std::cout << "Error sending write message to server\n";
+        myConnection = constatus::no;
+        return;
+    }
+    std::cout << "Write message sent to server\n";
+}
+
 int main()
 {
+    // construct event manager
     boost::asio::io_service io_service;
 
+    // construct work simulator
     cWorkSimulator theWorkSimulator( io_service );
 
+    // construct TCP client
     cNonBlockingTCPClient theClient( io_service );
+
+    // start TCP client command handler
     theClient.CheckForCommand();
-    //theClient.Connect( "localhost", "5555" );
-    //theClient.Read();
 
     // start keyboard monitor
     cKeyboard theKeyBoard( io_service );
@@ -359,8 +425,10 @@ int main()
         std::ref(theKeyBoard) );
     std::this_thread::sleep_for (std::chrono::seconds(3));
 
+    // start simulating work
     theWorkSimulator.StartWork();
 
+    // start event handler ( runs until stop requested )
     io_service.run();
 
     std::cout << "Event manager finished\n";
