@@ -34,10 +34,11 @@ public:
 
     void FinishWork()
     {
-        if( StopGet() ) {
+        if( StopGet() )
+        {
             std::cout << "Stopping\n";
             return;
-    }
+        }
         if( ! myfWaitOnUser)
         {
             static int count;
@@ -87,9 +88,26 @@ public:
     cNonBlockingTCPClient(
         boost::asio::io_service& io_service )
         : myIOService( io_service )
+        , myTimer( new boost::asio::deadline_timer( io_service ))
     {
 
     }
+
+    /// Check for commands ( connect, read, write )
+    void CheckForCommand();
+
+    /** Set command from user ( thread safe )
+
+    This is called from the keyboard monitor in the keyboard monitor thread
+    */
+    void Command( const std::string& command);
+
+    /** Get command from user ( thread safe )
+
+    This is called from the main thread
+    */
+    string Command();
+
     void Connect(
         const std::string& ip,
         const std::string& port);
@@ -100,6 +118,9 @@ public:
 private:
     boost::asio::io_service& myIOService;
     boost::asio::ip::tcp::tcp::socket * mySocketTCP;
+    boost::asio::deadline_timer * myTimer;
+    std::string myCommand;
+    std::mutex myMutex;
     enum class constatus
     {
         no,                             /// there is no connection
@@ -133,19 +154,24 @@ public:
     {
         myWS = &WS;
     }
+    void Set( cNonBlockingTCPClient& TCP )
+    {
+        myTCP = &TCP;
+    }
     void Start();
 
 private:
     boost::asio::io_service& myIOService;
     cWorkSimulator* myWS;
+    cNonBlockingTCPClient * myTCP;
 };
 
 void cKeyboard::Start()
 {
     std::cout << "\nKeyboard monitor running\n\n"
-            "   To pause for user input type 'q<ENTER>\n"
-            "   To stop type 'x<ENTER>' ( DO NOT USE ctrlC )\n\n"
-            "   Don't forget to hit <ENTER>!\n\n";
+              "   To pause for user input type 'q<ENTER>\n"
+              "   To stop type 'x<ENTER>' ( DO NOT USE ctrlC )\n\n"
+              "   Don't forget to hit <ENTER>!\n\n";
 
     std::string cmd;
     while( 1 )
@@ -172,13 +198,48 @@ void cKeyboard::Start()
         case 'R':
         case 'w':
         case 'W':
+
+            // register command with TCP client
+            myTCP->Command( cmd );
+
+            // user input finished, resume work
             myWS->WaitOnUserUnSet();
+
             break;
 
         }
     }
 }
+void cNonBlockingTCPClient::CheckForCommand()
+{
+    string cmd = Command();
+    if( cmd.length() )
+    {
+        std::cout << "cNonBlockingTCPClient::CheckForCommand " << cmd << "\n";
 
+        // clear old command
+        Command("");
+    }
+    else{
+        std::cout << "no command\n";
+    }
+
+    //schedule next check
+    myTimer->expires_from_now(boost::posix_time::milliseconds(500));
+
+    myTimer->async_wait(boost::bind(&cNonBlockingTCPClient::CheckForCommand, this));
+}
+
+void cNonBlockingTCPClient::Command( const std::string& command)
+{
+    std::lock_guard<std::mutex> lck (myMutex);
+    myCommand = command;
+}
+std::string cNonBlockingTCPClient::Command()
+{
+    std::lock_guard<std::mutex> lck (myMutex);
+    return myCommand;
+}
 
 void cNonBlockingTCPClient::Connect(
     const std::string& ip,
@@ -258,12 +319,14 @@ int main()
     cWorkSimulator theWorkSimulator( io_service );
 
     cNonBlockingTCPClient theClient( io_service );
+    theClient.CheckForCommand();
     //theClient.Connect( "localhost", "5555" );
     //theClient.Read();
 
     // start keyboard monitor
     cKeyboard theKeyBoard( io_service );
     theKeyBoard.Set( theWorkSimulator );
+    theKeyBoard.Set( theClient );
     std::thread * threadKeyboard = new std::thread(
         &cKeyboard::Start,
         std::ref(theKeyBoard) );
