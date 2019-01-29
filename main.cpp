@@ -26,7 +26,6 @@ public:
     cNonBlockingTCPClient(
         boost::asio::io_service& io_service )
         : myIOService( io_service )
-        , myTimer( new boost::asio::deadline_timer( io_service ))
     {
 
     }
@@ -67,7 +66,6 @@ public:
 private:
     boost::asio::io_service& myIOService;
     boost::asio::ip::tcp::tcp::socket * mySocketTCP;
-    boost::asio::deadline_timer * myTimer;
     enum class constatus
     {
         no,                             /// there is no connection
@@ -104,14 +102,22 @@ public:
     }
     void StartWork()
     {
-        // simulated work
-        myTimer->expires_from_now(boost::posix_time::milliseconds(WORK_TIME_MSECS));
+        // start work in its own thread
+        myWorkThread = new std::thread(
+            &cWorkSimulator::Do,
+            std::ref(*this) );
 
+        // check for work completed every 100 msecs
+        myTimer->expires_from_now(boost::posix_time::milliseconds(100));
         myTimer->async_wait(boost::bind(&cWorkSimulator::FinishWork, this));
     }
 
     void FinishWork()
     {
+        // the work has completed
+        // so we do not need the worker thread anymore
+        delete myWorkThread;
+
         if( StopGet() )
         {
             std::cout << "Stopping\n";
@@ -127,6 +133,14 @@ public:
         // start another job
         StartWork();
 
+    }
+    void Do()
+    {
+        // Simulate doing some work
+        // this line can be replaced by code that really does something
+        std::this_thread::sleep_for (std::chrono::milliseconds(WORK_TIME_MSECS));
+
+        WorkDone();
     }
     void WaitOnUserSet()
     {
@@ -153,11 +167,18 @@ public:
         std::lock_guard<std::mutex> lck (myMutex);
         return myfStop;
     }
+    void WorkDone()
+    {
+        std::lock_guard<std::mutex> lck (myMutex);
+        myfWorkDone = true;
+    }
 private:
     boost::asio::deadline_timer * myTimer;
     std::mutex myMutex;
     bool myfWaitOnUser;
-    bool myfStop;
+    bool myfStop;           // true if stop reuest
+    bool myfWorkDone;
+    std::thread * myWorkThread;
 };
 
 
