@@ -2,6 +2,7 @@
 #include <string>
 #include <thread>
 #include <mutex>
+#include <queue>
 #include <boost/asio.hpp>
 #include <boost/bind.hpp>
 
@@ -9,10 +10,6 @@ using namespace std;
 
 #define MAX_PACKET_SIZE_BYTES 1024
 
-// set work time to 2 seconds
-// to slow things down for debugfging purposes
-// you can reduce this to 500 for production
-#define WORK_TIME_MSECS 2000
 
 /** A non-blocking TCP client */
 class cNonBlockingTCPClient
@@ -90,58 +87,59 @@ private:
         std::size_t bytes_sent );
 };
 
+class cJob
+{
+public:
+    int myIndex;
+    static int myLastIndex;
+    int myLength;
+
+
+    cJob( int length )
+        : myLength( length )
+    {
+        myIndex = ++myLastIndex;
+    }
+
+    void Do()
+    {
+        std::cout << "\t\t\tStarting job " << myIndex << "\n";
+
+        // Simulate doing some work
+        // this line can be replaced by code that really does something
+        std::this_thread::sleep_for ( std::chrono::milliseconds( myLength ) );
+
+        std::cout << "\t\t\tJob Completed " << myIndex << "\n";
+    }
+};
+
+int cJob::myLastIndex = 0;
+
 class cWorkSimulator
 {
 public:
 
-    cWorkSimulator( boost::asio::io_service& io_service)
-        : myTimer( new boost::asio::deadline_timer( io_service ))
+    cWorkSimulator()
+        : myTimerCheckNewWork( new boost::asio::deadline_timer( myEventManager ))
         , myfStop( false )
-    {
-
-    }
-    void StartWork()
+        , myJob( 0 )
     {
         // start work in its own thread
         myWorkThread = new std::thread(
-            &cWorkSimulator::Do,
+            &cWorkSimulator::StartWorkInOwnThread,
             std::ref(*this) );
-
-        // check for work completed every 100 msecs
-        myTimer->expires_from_now(boost::posix_time::milliseconds(100));
-        myTimer->async_wait(boost::bind(&cWorkSimulator::FinishWork, this));
     }
 
-    void FinishWork()
+    void Job( int length )
     {
-        // the work has completed
-        // so we do not need the worker thread anymore
-        delete myWorkThread;
+        std::lock_guard<std::mutex> lck (myMutex);
 
-        if( StopGet() )
-        {
-            std::cout << "Stopping\n";
-            return;
-        }
-        if( ! myfWaitOnUser)
-        {
-            static int count;
-            count++;
-            std::cout << "Completed Job " << count << "\n";
-        }
+        // add to job queue
+        myJobQueue.push( new cJob( length ) );
 
-        // start another job
-        StartWork();
-
+        std::cout << "\t\t\tJob " << myJobQueue.back()->myIndex << " waiting, queue is " << myJobQueue.size()-1 << "\n";
     }
-    void Do()
-    {
-        // Simulate doing some work
-        // this line can be replaced by code that really does something
-        std::this_thread::sleep_for (std::chrono::milliseconds(WORK_TIME_MSECS));
 
-        WorkDone();
-    }
     void WaitOnUserSet()
     {
         std::lock_guard<std::mutex> lck (myMutex);
@@ -167,18 +165,47 @@ public:
         std::lock_guard<std::mutex> lck (myMutex);
         return myfStop;
     }
+
     void WorkDone()
     {
         std::lock_guard<std::mutex> lck (myMutex);
-        myfWorkDone = true;
+        delete myJobQueue.front();
+        myJobQueue.pop();
+    }
+
+    void Job( cJob* job )
+    {
+        std::lock_guard<std::mutex> lck (myMutex);
+        myJob = job;
+    }
+    cJob * Job()
+    {
+        std::lock_guard<std::mutex> lck (myMutex);
+        return myJob;
+    }
+    bool GetJob()
+    {
+        std::lock_guard<std::mutex> lck (myMutex);
+        if( myJobQueue.size() )
+        {
+            myJob = myJobQueue.front();
+            return true;
+        }
+        return false;
     }
 private:
-    boost::asio::deadline_timer * myTimer;
+    boost::asio::io_service myEventManager;
+    boost::asio::deadline_timer * myTimerCheckNewWork;
     std::mutex myMutex;
     bool myfWaitOnUser;
-    bool myfStop;           // true if stop reuest
-    bool myfWorkDone;
+    bool myfStop;                       // true if stop reuest
     std::thread * myWorkThread;
+    cJob * myJob;                       // current Job
+    std::queue<cJob*> myJobQueue;       // waiting jobs
+
+    void StartWorkInOwnThread();
+    void CheckForNewWork();
+
 };
 
 
@@ -190,9 +217,11 @@ class cCommander
 public:
     cCommander(
         boost::asio::io_service& io_service,
-        cNonBlockingTCPClient& TCP )
+        cNonBlockingTCPClient& TCP,
+        cWorkSimulator& Worker )
         : myIOService( io_service )
         , myTCP( TCP )
+        , myWorker( Worker )
         , myTimer( new boost::asio::deadline_timer( io_service ))
     {
         CheckForCommand();
@@ -215,6 +244,7 @@ private:
     boost::asio::io_service& myIOService;
     boost::asio::deadline_timer * myTimer;
     cNonBlockingTCPClient & myTCP;
+    cWorkSimulator& myWorker;
     std::string myCommand;
     std::mutex myMutex;
 
@@ -234,26 +264,18 @@ class cKeyboard
 {
 public:
     cKeyboard(
-        boost::asio::io_service& io_service,
-        cWorkSimulator& WS,
         cCommander& myCommander );
 
     void Start();
 
 private:
-    boost::asio::io_service& myIOService;
-    cWorkSimulator* myWS;
     cCommander * myCommander;
 };
 
 cKeyboard::cKeyboard(
-    boost::asio::io_service& io_service,
-    cWorkSimulator& WS,
     cCommander& Commander
 )
-    : myIOService( io_service )
-    , myWS( &WS )
-    , myCommander( &Commander )
+    : myCommander( &Commander )
 {
     // start monitor in own thread
     new std::thread(
@@ -268,10 +290,10 @@ cKeyboard::cKeyboard(
 void cKeyboard::Start()
 {
     std::cout << "\nKeyboard monitor running\n\n"
-              "   To pause for user input type 'q<ENTER>\n"
-              "   To connect to server type 'C <ip> <port><ENTER>\n"
-              "   To read from server type 'R <byte count><ENTER>\n"
+              "   To connect to server type 'C <ip> <port><ENTER>'\n"
+              "   To read from server type 'R <byte count><ENTER>'\n"
               "   To send a pre-defined message to the server type 'W'\n"
+              "   To submit a job request type 'J <length msecs>'\n"
               "   To stop type 'x<ENTER>' ( DO NOT USE ctrlC )\n\n"
               "   Don't forget to hit <ENTER>!\n\n";
 
@@ -279,14 +301,13 @@ void cKeyboard::Start()
     while( 1 )
     {
         getline( std::cin, cmd );
-        std::cout << "input was " << cmd << "\n";
+
         switch( cmd[0] )
         {
 
         case 'x':
         case 'X':
             myCommander->Command( cmd );
-            myWS->Stop();
 
             // return, ending the thread
             return;
@@ -294,7 +315,7 @@ void cKeyboard::Start()
         case 'q':
         case 'Q':
             std::cout << "Waiting for user input: C or R or W\n";
-            myWS->WaitOnUserSet();
+            // myWS->WaitOnUserSet();
             break;
 
         case 'c':
@@ -303,12 +324,14 @@ void cKeyboard::Start()
         case 'R':
         case 'w':
         case 'W':
+        case 'j':
+        case 'J':
 
             // register command with TCP client
             myCommander->Command( cmd );
 
             // user input finished, resume work
-            myWS->WaitOnUserUnSet();
+            //myWS->WaitOnUserUnSet();
 
             break;
 
@@ -318,9 +341,10 @@ void cKeyboard::Start()
 void cCommander::CheckForCommand()
 {
     string cmd = Command();
+
     if( cmd.length() )
     {
-        std::cout << "cNonBlockingTCPClient::CheckForCommand " << cmd << "\n";
+        std::cout << "Command: " << cmd << "\n";
 
         std::stringstream sst(cmd);
         std::vector< std::string > vcmd;
@@ -346,6 +370,14 @@ void cCommander::CheckForCommand()
         case 'w':
         case 'W':
             myTCP.Write();
+            break;
+
+        case 'j':
+        case 'J':
+            if( vcmd.size() < 2 )
+                std::cout << "Job command missing length\n";
+            else
+                myWorker.Job( atoi( vcmd[1].c_str()) );
             break;
 
         case 'x':
@@ -505,13 +537,35 @@ void cNonBlockingTCPClient::handle_write(
     std::cout << "Write message sent to server\n";
 }
 
+void cWorkSimulator::StartWorkInOwnThread()
+{
+    CheckForNewWork();
+    myEventManager.run();
+}
+void cWorkSimulator::CheckForNewWork()
+{
+    if( StopGet() )
+        return;
+
+    if( GetJob() )
+    {
+        myJob->Do();
+
+        WorkDone();
+    }
+
+    // check for new work every 100 msecs
+    myTimerCheckNewWork->expires_from_now(boost::posix_time::milliseconds(100));
+    myTimerCheckNewWork->async_wait(boost::bind(&cWorkSimulator::CheckForNewWork, this));
+}
+
 int main()
 {
     // construct event manager
     boost::asio::io_service io_service;
 
     // construct work simulator
-    cWorkSimulator theWorkSimulator( io_service );
+    cWorkSimulator theWorkSimulator;
 
     // construct TCP client
     cNonBlockingTCPClient theClient( io_service );
@@ -519,17 +573,13 @@ int main()
     // construct commander to dispatch commands from user in keyboard thread to TCP client in main thread
     cCommander theCommander(
         io_service,
-        theClient );
+        theClient,
+        theWorkSimulator );
 
     // start keyboard monitor
     cKeyboard theKeyBoard(
-        io_service,
-        theWorkSimulator,
         theCommander
     );
-
-    // start simulating work
-    theWorkSimulator.StartWork();
 
     // start event handler ( runs until stop requested )
     io_service.run();
