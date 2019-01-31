@@ -129,17 +129,6 @@ public:
             &cWorkSimulator::StartWorkInOwnThread,
             std::ref(*this) );
     }
-
-    void Job( int length )
-    {
-        std::lock_guard<std::mutex> lck (myMutex);
-
-        // add to job queue
-        myJobQueue.push( new cJob( length ) );
-
-        std::cout << "\t\t\tJob " << myJobQueue.back()->myIndex << " waiting, queue is " << myJobQueue.size()-1 << "\n";
-    }
-
     void WaitOnUserSet()
     {
         std::lock_guard<std::mutex> lck (myMutex);
@@ -160,25 +149,40 @@ public:
         std::lock_guard<std::mutex> lck (myMutex);
         myfStop = true;
     }
-    bool StopGet()
-    {
-        std::lock_guard<std::mutex> lck (myMutex);
-        return myfStop;
-    }
 
-    void WorkDone()
-    {
-        std::lock_guard<std::mutex> lck (myMutex);
-        delete myJobQueue.front();
-        myJobQueue.pop();
-    }
 
+    /** Add job to queue
+        @param[in] job pointer to job to be addded
+
+        The job is now owned by the work simulator
+        and it will be deleted when completed
+
+        Thread safe
+    */
     void Job( cJob* job )
     {
         std::lock_guard<std::mutex> lck (myMutex);
-        myJob = job;
+
+        // add to job queue
+        myJobQueue.push( job );
+
+        std::cout << "\t\t\tJob " << myJobQueue.back()->myIndex
+            << " waiting, queue is " << myJobQueue.size()-1 << "\n";
     }
-    cJob * Job()
+
+private:
+    boost::asio::io_service myEventManager;
+    boost::asio::deadline_timer * myTimerCheckNewWork;
+    std::mutex myMutex;
+    bool myfWaitOnUser;
+    bool myfStop;                       // true if stop reuest
+    std::thread * myWorkThread;
+    cJob * myJob;                       // current Job
+    std::queue<cJob*> myJobQueue;       // waiting jobs
+
+    void StartWorkInOwnThread();
+    void CheckForNewWork();
+        cJob * Job()
     {
         std::lock_guard<std::mutex> lck (myMutex);
         return myJob;
@@ -193,18 +197,19 @@ public:
         }
         return false;
     }
-private:
-    boost::asio::io_service myEventManager;
-    boost::asio::deadline_timer * myTimerCheckNewWork;
-    std::mutex myMutex;
-    bool myfWaitOnUser;
-    bool myfStop;                       // true if stop reuest
-    std::thread * myWorkThread;
-    cJob * myJob;                       // current Job
-    std::queue<cJob*> myJobQueue;       // waiting jobs
 
-    void StartWorkInOwnThread();
-    void CheckForNewWork();
+    bool StopGet()
+    {
+        std::lock_guard<std::mutex> lck (myMutex);
+        return myfStop;
+    }
+
+    void WorkDone()
+    {
+        std::lock_guard<std::mutex> lck (myMutex);
+        delete myJobQueue.front();
+        myJobQueue.pop();
+    }
 
 };
 
@@ -377,7 +382,7 @@ void cCommander::CheckForCommand()
             if( vcmd.size() < 2 )
                 std::cout << "Job command missing length\n";
             else
-                myWorker.Job( atoi( vcmd[1].c_str()) );
+                myWorker.Job( new cJob( atoi( vcmd[1].c_str())) );
             break;
 
         case 'x':
