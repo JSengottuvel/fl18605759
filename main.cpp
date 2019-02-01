@@ -144,12 +144,16 @@ public:
         std::lock_guard<std::mutex> lck (myMutex);
         return myfWaitOnUser;
     }
+
+    /** Register stop request
+
+        The thread will stop when the current job completes
+    */
     void Stop()
     {
         std::lock_guard<std::mutex> lck (myMutex);
         myfStop = true;
     }
-
 
     /** Add job to queue
         @param[in] job pointer to job to be addded
@@ -170,6 +174,12 @@ public:
             << " waiting, queue is " << myJobQueue.size()-1 << "\n";
     }
 
+    /** Wait for worker thread to finish */
+    void Join()
+    {
+        myWorkThread->join();
+    }
+
 private:
     boost::asio::io_service myEventManager;
     boost::asio::deadline_timer * myTimerCheckNewWork;
@@ -180,13 +190,15 @@ private:
     cJob * myJob;                       // current Job
     std::queue<cJob*> myJobQueue;       // waiting jobs
 
+    /** Worker thread starting point */
     void StartWorkInOwnThread();
+
+    /** Process job if one is waiting */
     void CheckForNewWork();
-        cJob * Job()
-    {
-        std::lock_guard<std::mutex> lck (myMutex);
-        return myJob;
-    }
+
+    /** Get job that has been waiting for the longest
+        @return true if there was a job waiting
+    */
     bool GetJob()
     {
         std::lock_guard<std::mutex> lck (myMutex);
@@ -198,12 +210,18 @@ private:
         return false;
     }
 
+    /** Get stop flag, thread safe */
     bool StopGet()
     {
         std::lock_guard<std::mutex> lck (myMutex);
         return myfStop;
     }
 
+    /** Tidy up completed job
+
+        Deletes completed job ( frees memory )
+        Pops job from queue
+    */
     void WorkDone()
     {
         std::lock_guard<std::mutex> lck (myMutex);
@@ -225,9 +243,9 @@ public:
         cNonBlockingTCPClient& TCP,
         cWorkSimulator& Worker )
         : myIOService( io_service )
+        , myTimer( new boost::asio::deadline_timer( io_service ))
         , myTCP( TCP )
         , myWorker( Worker )
-        , myTimer( new boost::asio::deadline_timer( io_service ))
     {
         CheckForCommand();
     }
@@ -387,6 +405,8 @@ void cCommander::CheckForCommand()
 
         case 'x':
         case 'X':
+            myWorker.Stop();
+            myWorker.Join();
             // stop command, return without scheduling another check
             return;
 
@@ -511,7 +531,7 @@ void cNonBlockingTCPClient::handle_read(
         return;
     }
     std::cout << bytes_received << " bytes read\n";
-    for( int k = 0; k < bytes_received; k++ )
+    for( int k = 0; k < (int)bytes_received; k++ )
         std::cout << std::hex << (int)myRcvBuffer[k] << " ";
     std::cout << std::dec << "\n";
 }
